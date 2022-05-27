@@ -1,0 +1,588 @@
+#include "headfile.h"
+#include "Binarization.h"
+#include "camera.h"
+#include "Encoder.h"
+#include "Motor.h"
+#include "Servo.h"
+#include "Variable.h"
+#include "SJUOpenSource.h"
+#include "LQOpenSource.h"
+#include "debug.h"
+
+
+#define MISS 255
+#define NEAR_LINE 40
+#define DV  60
+#define FAR_LINE 10
+
+int Llx_flag = 0, Rlx_flag = 0;
+
+#define LINE_LEFT 5
+#define LINE_RIGHT 183
+
+/****************************生长线确定边线********************************/
+void edge_detec(unsigned char Image_Use[LCD_H][LCD_W])
+{
+    for (int i = LCD_H - 1; i >= 0; i--) //边界初始化，先全部赋为MISS
+    {
+        leftline[i] = MISS;
+        rightline[i] = MISS;
+    }
+    //直接求起始行白点平均位置*************
+    unsigned char *map;
+    map = Image_Use[NEAR_LINE]; //map位置为image[NEAR_LINE][0]
+    int white_sum = 0;
+    int white_num = 0;
+    int temp_mid;
+
+    for (int i = LINE_LEFT; i < LINE_RIGHT; i++)
+    {
+        if ((*map))
+        {
+            white_sum += i;
+            white_num++;
+        }
+        map++;
+    }
+
+    int find_left_edge = 0;
+    int find_right_edge = 0;
+
+    if (white_num)
+    {
+        temp_mid = white_sum / white_num;
+        map = &Image_Use[NEAR_LINE][temp_mid];
+        for (int i = temp_mid; i > LINE_LEFT; i--) //从中向左找左边界
+        {
+            if (*map - *(map - 1) == DV && *(map - 2) == IMG_BLACK)
+            {
+                find_left_edge = 1;
+                leftline[NEAR_LINE] = (unsigned char)i;
+                break;
+            }
+            map--;
+        }
+
+        map = &Image_Use[NEAR_LINE][temp_mid];
+        for (int i = temp_mid; i < LINE_RIGHT; i++) //从中向右找右边界
+        {
+            if (*map - *(map + 1) == DV && *(map + 2) == IMG_BLACK)
+            {
+                find_right_edge = 1;
+                rightline[NEAR_LINE] = (unsigned char)i;
+                break;
+            }
+            map++;
+        }
+    }
+    if (!find_right_edge)
+        rightline[NEAR_LINE] = LINE_RIGHT;
+
+    if (!find_left_edge)
+        leftline[NEAR_LINE] = LINE_LEFT;
+    /*************************************************/
+    //开始爬边*************************
+    int current_left_edge = MISS, current_right_edge = MISS, last_edge = 0;
+
+    for (int i = NEAR_LINE - 1; i >= FAR_LINE; i--)
+    {
+        //找左边界**************************
+        current_left_edge = MISS;
+        last_edge = leftline[i + 1];
+        find_left_edge = 0;
+
+        if (last_edge != MISS)
+        {
+            if (!Image_Use[i][last_edge]) //下一行为黑，向右边找
+            {
+                map = &Image_Use[i][last_edge];
+                for (int j = last_edge; j < LINE_RIGHT; j++)
+                {
+                    if (*(map + 1) - *map == DV && *(map + 2) == DV)
+                    {
+                        current_left_edge = j;
+                        find_left_edge = 1;
+                        break;
+                    }
+                    map++;
+                }
+
+                if (!find_left_edge) //全黑
+                    Llx_flag = i + 1;
+            }
+            else //下一行为白
+            {
+                map = &Image_Use[i][last_edge];
+                for (int j = last_edge; j > LINE_LEFT; j--)
+                {
+                    if (*(map) - *(map - 1) == DV && *(map - 2) == IMG_BLACK)
+                    {
+                        current_left_edge = j;
+                        find_left_edge = 1;
+                        break;
+                    }
+                    map--;
+                }
+                if (!find_left_edge) //全白
+                    current_left_edge = LINE_LEFT;
+            }
+        }
+        else
+        {
+            if (!Image_Use[i][Llx_flag]) //下一行为黑，向右边找
+            {
+                map = &Image_Use[i][Llx_flag];
+                for (int j = Llx_flag; j < LINE_RIGHT; j++)
+                {
+                    if (*(map + 1) - *map == DV && *(map + 2) == DV)
+                    {
+                        current_left_edge = j;
+                        find_left_edge = 1;
+                        break;
+                    }
+                    map++;
+                }
+            }
+            else //下一行为白
+            {
+                map = &Image_Use[i][Llx_flag];
+                for (int j = Llx_flag; j > LINE_LEFT; j--)
+                {
+                    if (*(map) - *(map - 1) == DV && *(map - 2) == IMG_BLACK)
+                    {
+                        current_left_edge = j;
+                        find_left_edge = 1;
+                        break;
+                    }
+                    map--;
+                }
+                if (!find_left_edge) //全白
+                    current_left_edge = LINE_LEFT;
+            }
+        }
+
+        //查找右边界****************************
+        current_right_edge = MISS;
+        last_edge = rightline[i + 1];
+        find_right_edge = 0;
+        if (last_edge != MISS)
+        {
+            if (!Image_Use[i][last_edge]) //下一行为黑 向左查找
+            {
+                map = &Image_Use[i][last_edge];
+                for (int j = last_edge; j > LINE_LEFT; j--)
+                {
+                    if (*(map - 1) - *map == DV && *(map - 2) == DV)
+                    {
+                        current_right_edge = j;
+                        find_right_edge = 1;
+                        break;
+                    }
+                    map--;
+                }
+                if (!find_left_edge) //全黑
+                    Rlx_flag = i + 1;
+            }
+            else //下一行为白 向右查找
+            {
+                map = &Image_Use[i][last_edge];
+                for (int j = last_edge; j < LINE_RIGHT; j++)
+                {
+                    if (*map - *(map + 1) == DV && *(map + 2) == IMG_BLACK)
+                    {
+                        current_right_edge = j;
+                        find_right_edge = 1;
+                        break;
+                    }
+                    map++;
+                }
+                if (!find_right_edge) //全白
+                    current_right_edge = LINE_RIGHT;
+            }
+        }
+        else
+        {
+            if (!Image_Use[i][Rlx_flag]) //下一行为黑 向左查找
+            {
+                map = &Image_Use[i][Rlx_flag];
+                for (int j = Rlx_flag; j > LINE_LEFT; j--)
+                {
+                    if (*(map - 1) - *map == DV && *(map - 2) == DV)
+                    {
+                        current_right_edge = j;
+                        find_right_edge = 1;
+                        break;
+                    }
+                    map--;
+                }
+            }
+            else //下一行为白 向右查找
+            {
+                map = &Image_Use[i][Rlx_flag];
+                for (int j = Rlx_flag; j < LINE_RIGHT; j++)
+                {
+                    if (*map - *(map + 1) == DV && *(map + 2) == IMG_BLACK)
+                    {
+                        current_right_edge = j;
+                        find_right_edge = 1;
+                        break;
+                    }
+                    map++;
+                }
+                if (!find_right_edge) //全白
+                    current_right_edge = LINE_RIGHT;
+            }
+        }
+
+//        if(current_left_edge == MISS && current_right_edge == MISS)//赛道消失
+//            break;
+//        leftline[i] = (unsigned char)current_left_edge;
+//        rightline[i] = (unsigned char)current_right_edge;
+
+        leftline[i] = (unsigned char)current_left_edge;
+        rightline[i] = (unsigned char)current_right_edge;
+
+        if (current_left_edge == MISS)
+        {
+            if (current_right_edge == MISS)
+                break;
+            Llx_flag = i;
+        }
+        if (current_left_edge == MISS)
+        {
+            Rlx_flag = i;
+        }
+    }
+}
+
+/****************赛道状态变量*****************/
+unsigned char road_status = 0; // 0 表示初始状态，1   表示十字， 2  表示三岔路口，3    表示车库。
+/******************************判断十字********************************/
+int goin_cross = 0;
+int l_d_bigchange = 0, r_d_bigchange = 0;
+int l_u_bigchange = 0, r_u_bigchange = 0;
+axis l_d, l_u, r_d, r_u;
+
+/*
+ * 判断十字
+ */
+void crossroad(void)
+{
+    int maxwhite_sum = 0, len = LINE_RIGHT - LINE_LEFT;
+        goin_cross = 0;
+        for (int i = NEAR_LINE; i >= FAR_LINE; i--)
+            if (rightline[i] - leftline[i] == len)
+            {
+                maxwhite_sum++;
+                if (maxwhite_sum >= 3)
+                {
+                    goin_cross = 1;
+                    break;
+                }
+            }
+
+        if (!goin_cross)
+            return;
+
+        //找下段开始突变点
+        l_d_bigchange = 0; r_d_bigchange = 0;
+
+        for (int i = NEAR_LINE; i > FAR_LINE; i--)
+        {
+            if (leftline[i] == MISS || rightline[i] == MISS) //如果赛道消失，找到下一个有效点作为突变点
+            {
+                continue;
+            }
+            if (!l_d_bigchange && (leftline[i] - leftline[i - 1] >= 5))
+            {
+                l_d_bigchange = 1;
+                l_d.x = leftline[i];
+                l_d.y = i;
+            }
+            if (!r_d_bigchange && (rightline[i] - rightline[i - 1] <= -5) )
+            {
+                r_d_bigchange = 1;
+                r_d.x = rightline[i];
+                r_d.y = i;
+            }
+            if (l_d_bigchange & r_d_bigchange)
+                break;
+        }
+
+        //找上端突变点
+
+        l_u_bigchange = 0; r_u_bigchange = 0; //从上段开始突变点
+
+        for (int i = FAR_LINE + 10; i < NEAR_LINE - 1; i++)
+        {
+            if (leftline[i] == MISS || rightline[i] == MISS) //如果赛道消失，找到下一个有效点作为突变点
+            {
+                continue;
+            }
+            if (!l_u_bigchange && (leftline[i] - leftline[i + 1] >= 5))
+            {
+                l_u_bigchange = 1;
+                l_u.x = leftline[i];
+                l_u.y = i;
+            }
+            if (!r_u_bigchange && (rightline[i] - rightline[i + 1] <= -5))
+            {
+                r_u_bigchange = 1;
+                r_u.x = rightline[i];
+                r_u.y = i;
+            }
+            if (l_u_bigchange & r_u_bigchange)
+                break;
+        }
+
+        if (l_d_bigchange && l_u_bigchange && l_u.x <= l_d.x)
+            l_u_bigchange = 0;
+        if (r_d_bigchange && r_u_bigchange && r_u.x >= r_d.x)
+            r_u_bigchange = 0;
+
+        if (l_d_bigchange & r_d_bigchange & (!l_u_bigchange) & (!r_u_bigchange)) //两边下端都存在突变点 上端没有
+        {
+
+        }
+        if (l_u_bigchange & r_u_bigchange & (!l_d_bigchange) & (!r_d_bigchange)) //两边上端都存在突变点 下端没有
+        {
+
+        }
+        else if (l_d_bigchange & r_d_bigchange & l_u_bigchange & r_u_bigchange) //两边下端都有突变点 上端也有
+        {
+            int cross_num = (l_u.y + l_d.y + r_u.y + r_d.y) / 4;
+            if(rightline[cross_num] - leftline[cross_num] > 120){
+                road_status = 1;
+            }
+        }
+        else if (l_d_bigchange & l_u_bigchange & (!r_d_bigchange) & (!r_u_bigchange)) //仅左边上下有突变点 右边没有
+        {
+
+        }
+        else if (r_d_bigchange & r_u_bigchange & (!l_d_bigchange) & (!l_u_bigchange)) //仅右边上下有突变点 左边没有
+        {
+
+        }
+}
+
+/******************************三叉路口判断********************************/
+unsigned char mu = MISS, md = MISS;
+int top_status = 0;
+unsigned char image_wmid = LCD_W / 2;
+int top_left = 0, top_right = 0;
+/*****************************获取盖头线*****************************/
+void get_top(unsigned char Image_Use[LCD_H][LCD_W])
+{
+    //寻找盖头线
+    unsigned char *map;
+    int last_edge = 0;
+    topline[image_wmid] = md;
+    int find_left_edge = 0, find_right_edge = 0;
+    for(int i = LINE_LEFT; i < LINE_RIGHT; i++)
+        topline[i] = TOP_NEAR;
+    for (int i = image_wmid - 1; i >= TOPleft; i--)
+    {
+        //往左找边界**************************
+        topline[i] = TOP_NEAR;
+        last_edge = topline[i + 1];
+        find_left_edge = 0;
+        if (!Image_Use[last_edge][i]) //左边那一行为黑，向下寻找找
+        {
+            map = &Image_Use[last_edge][i];
+            for (int j = last_edge; j <= TOP_NEAR; j++)
+            {
+                if (*(map + LCD_W) - *map == DV && *(map + 2 * LCD_W) == DV)
+                {
+                    topline[i] = j;
+                    find_left_edge = 1;
+                    break;
+                }
+                map = map + LCD_W;
+            }
+
+            if (!find_left_edge) //全黑
+                break;
+        }
+        else //左边一行为白
+        {
+            map = &Image_Use[last_edge][i];
+            for (int j = last_edge; j > mu; j--)
+            {
+                if (*(map) - *(map - LCD_W) == DV && *(map - 2 * LCD_W) == IMG_BLACK)
+                {
+                    topline[i] = j;
+                    find_left_edge = 1;
+                    break;
+                }
+                map = map - LCD_W;
+            }
+            if (!find_left_edge){ //全白
+                top_left = i;
+                topline[i] = mu;
+            }
+        }
+    }
+    //往右边找边线
+    for (int i = image_wmid + 1; i <= TOPright; i++)
+    {
+        topline[i] = TOP_NEAR;
+        last_edge = topline[i - 1];
+        find_right_edge = 0;
+        if (!Image_Use[last_edge][i]) //右边那  一行为黑，向下寻找找
+        {
+            map = &Image_Use[last_edge][i];
+            for (int j = last_edge; j < TOP_NEAR; j++)
+            {
+                if (*(map + LCD_W) - *map == DV && *(map + 2 * LCD_W) == DV)
+                {
+                    topline[i] = j;
+                    find_right_edge = 1;
+                    break;
+                }
+                map = map + LCD_W;
+            }
+
+            if (!find_right_edge) //全黑
+                break;
+        }
+        else //下一行为白
+        {
+            map = &Image_Use[last_edge][i];
+            for (int j = last_edge; j > mu; j--)
+            {
+                if (*(map) - *(map - LCD_W) == DV && *(map - 2 * LCD_W) == IMG_BLACK)
+                {
+                    topline[i] = j;
+                    find_right_edge = 1;
+                    break;
+                }
+                map = map - LCD_W;
+            }
+            if (!find_right_edge){ //全白
+                top_right = i;
+                topline[i] = mu;
+            }
+        }
+    }
+}
+
+/*****************三叉相关变量******************/
+int px_num = 0, black_num = 0;
+int line_num = 0; // 中间有黑点的行数
+/*
+ * 判断三岔路
+ */
+void sc_judge(unsigned char Image_Use[LCD_H][LCD_W])
+{
+    mu = MISS;
+    md = MISS;
+    unsigned char i;
+    top_status = 0;
+    /*******************寻找可靠的上界*******************/
+    for (i = FAR_LINE; i < NEAR_LINE; i++)
+    {
+        if (leftline[i] != MISS && rightline[i] != MISS)
+        {
+            mu = i;
+            break;
+        }
+    }
+    /*****************寻找存在黑点的下界*****************/
+    if (mu > TOP_NEAR)
+        return;
+    for (i = TOP_NEAR; i > mu; i--)
+    { //从赛道底部行开始往上寻找
+        if (Image_Use[i][image_wmid] == IMG_BLACK)
+        {
+            md = i;
+            break;
+        }
+    }
+    /*****************判断上下界是否有效*****************/
+    if (md == MISS || md <= mu)
+    {
+        return;
+    }
+    else
+    {
+        top_status = 1;
+        get_top(Image_Use);
+    } //获取盖头线
+    /********************寻找左上线高,右上线高,低***************************/
+}
+
+/******************************状态判断**********************************/
+axis left_far, right_far, mid_near;
+int judge_status = 1;
+
+void status_judge(void)
+{
+    int i;
+    unsigned char *map;
+    left_far.y = MISS;
+    right_far.y = MISS;
+    mid_near.y = 0;
+    for (i = TOPleft; i < image_wmid; i++)
+    {
+        mmax_min(&left_far, &mid_near, i, topline[i]);
+    }
+    for (i = image_wmid; i < TOPright; i++)
+    {
+        mmax_min(&right_far, &mid_near, i, topline[i]);
+    }
+    judge_status = 1;
+    if (left_far.x > mid_near.x || right_far.x < mid_near.x || mid_near.y < FAR_LINE + 10)
+    {
+
+        road_status = 0;
+        judge_status = 0;
+        return;
+    }
+    /*******计算中线是黑点的情况下的每行平均黑点*********/
+    //从出现中心为黑线开始往上统计
+    line_num = 0;
+    black_num = 0;
+    for (i = md; i > mu; i--)
+    {
+        map = &mt9v03x_image[i][leftline[i]];
+        if (leftline[i] == MISS || rightline[i] == MISS)
+            break;
+        for (int j = leftline[i]; j < rightline[i]; j++)
+        {
+            if (*map == IMG_BLACK)
+                black_num++;
+            map++;
+        }
+        line_num++;
+    }
+    if (line_num != 0)
+        px_num = black_num / line_num;
+    else
+    {
+        px_num = 0;
+        return;
+    }
+    /********************预判断赛道状态*******************/
+
+    //十字
+    if (road_status != 2 && (px_num < 45 && px_num > 5))
+    {
+        road_status = 1;
+    }
+    //正常赛道
+    else if (black_num < 5 && road_status == 2)
+    {
+        road_status = 0;
+    }
+    //三叉路口
+    else if (px_num >= 45 && px_num < 100)
+    {
+        //if(abs(left_far.y - right_far.y) < 10)
+        if(topline[mid_near.x + 10] - mid_near.y < 10 && topline[mid_near.x - 10] - mid_near.y < 10)
+        road_status = 2;
+    }
+    else
+    {
+    }
+}
+

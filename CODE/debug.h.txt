@@ -1,0 +1,17 @@
+#ifndef CODE_DEBUG_H_
+#define CODE_DEBUG_H_
+
+#include "headfile.h"
+#include "Variable.h"
+#define TOP_NEAR 40
+#define TOP_FAR 10
+
+#define TOPleft 5
+#define TOPright 55
+
+typedef struct{
+    int x;
+    int y;
+}axis;
+void edge_detec(unsigned char Image_Use[LCD_H][LCD_W]);
+#endif /* CODE_TEST_H_ */
